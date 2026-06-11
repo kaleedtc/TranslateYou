@@ -17,13 +17,12 @@
 
 package com.bnyro.translate.util
 
-import android.app.DownloadManager
 import android.content.Context
 import android.graphics.Bitmap
-import android.net.Uri
+import android.graphics.Rect
 import android.util.Log
 import com.bnyro.translate.R
-import com.bnyro.translate.api.ExternalApi
+import com.bnyro.translate.RetrofitHelper
 import com.bnyro.translate.ext.toastFromMainThread
 import com.bnyro.translate.obj.TessLanguage
 import com.googlecode.tesseract.android.TessBaseAPI
@@ -36,6 +35,8 @@ object TessHelper {
     const val tessRepoUrl = "https://github.com/tesseract-ocr/tessdata"
     const val DATA_FILE_SUFFIX = ".traineddata"
     private const val TESS_DIR = "tessdata"
+
+    private const val DOWNLOAD_BUFFER_SIZE = 200 * 1024 // 200kB
 
     private val externalApi by lazy {
         RetrofitHelper.createInstance<ExternalApi>(githubApiUrl)
@@ -51,7 +52,7 @@ object TessHelper {
         }
     }
 
-    fun getText(context: Context, bitmap: Bitmap): String? {
+    fun getText(context: Context, bitmap: Bitmap): Pair<String, Map<Rect, String>>? {
         val tess = TessBaseAPI()
         val rootDir = getRootDir(context)
         val language = Preferences.get(Preferences.tessLanguageKey, "eng")
@@ -63,23 +64,56 @@ object TessHelper {
             }
             tess.setImage(bitmap)
 
-            return tess.utF8Text
+            // trigger detection
+            val text = tess.utF8Text ?: return null
+
+            // collect all detected text segments in the image
+            val regions = mutableMapOf<Rect, String>()
+            val level = TessBaseAPI.PageIteratorLevel.RIL_TEXTLINE
+            val it = tess.resultIterator
+            it.begin()
+            while (it.next(level)) {
+                val text = it.getUTF8Text(level)
+                regions[it.getBoundingRect(level)] = text
+            }
+            it.delete()
+
+            return text to regions
         } finally {
             tess.recycle()
         }
     }
 
-    fun downloadLanguageData(context: Context, languagePath: String) {
+    suspend fun downloadLanguageData(context: Context, languagePath: String, onProgress: (Float) -> Unit) {
         val url = "$baseUrl/$languagePath"
         val targetFile = File(getTessDir(context), languagePath)
 
-        val downloadService = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setDestinationUri(Uri.fromFile(targetFile))
-            .setTitle("Downloading $languagePath ...")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+        val connection = externalApi.downloadTessLanguageData(url)
+        val fullSize = connection.contentLength()
+        var currentDownloadSize = 0L
 
-        downloadService.enqueue(request)
+        try {
+            targetFile.outputStream().use { fileOutputStream ->
+                connection.byteStream().use { inputStream ->
+                    val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                    var bytesRead = 0
+
+                    while (true) {
+                        bytesRead = inputStream.read(buffer)
+                        if (bytesRead < 0) break
+
+                        fileOutputStream.write(buffer, 0, bytesRead)
+
+                        currentDownloadSize += bytesRead
+                        onProgress(currentDownloadSize.toFloat() / fullSize)
+                    }
+                    onProgress(1f)
+                }
+            }
+        } catch (_: Exception) {
+            onProgress.invoke(-1f)
+            targetFile.delete()
+        }
     }
 
     fun getDownloadedLanguages(context: Context): List<String> {

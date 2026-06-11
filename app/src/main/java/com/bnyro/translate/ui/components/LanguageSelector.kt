@@ -49,11 +49,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.bnyro.translate.DatabaseHolder
 import com.bnyro.translate.R
-import com.bnyro.translate.db.obj.Language
+import com.bnyro.translate.db.obj.DbLanguage
 import com.bnyro.translate.ui.dialogs.FullscreenDialog
 import com.bnyro.translate.ui.models.TranslationModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import net.youapps.translation_engines.Language
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,12 +129,7 @@ fun LanguageSelector(
     val languages = availableLanguages.toMutableList()
 
     if (showDialog) {
-        val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(
-            rememberTopAppBarState()
-        )
-
         FullscreenDialog(
-            modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
             onDismissRequest = {
                 searchQuery = ""
                 showDialog = false
@@ -151,8 +147,7 @@ fun LanguageSelector(
                             onClick = { showDialog = false }
                         )
                     },
-                    actions = {},
-                    scrollBehavior = scrollBehavior
+                    actions = {}
                 )
             },
             content = {
@@ -204,7 +199,7 @@ fun LanguageSelector(
                                         it != language
                                     }
                                 scope.launch(Dispatchers.IO) {
-                                    DatabaseHolder.Db.languageBookmarksDao().delete(it)
+                                    DatabaseHolder.Db.languageBookmarksDao().delete(DbLanguage(it))
                                 }
                             }
                         )
@@ -240,12 +235,15 @@ fun LanguageSelector(
                                 viewModel.bookmarkedLanguages =
                                     if (viewModel.bookmarkedLanguages.contains(it)) {
                                         scope.launch(Dispatchers.IO) {
-                                            DatabaseHolder.Db.languageBookmarksDao().delete(it)
+                                            DatabaseHolder.Db.languageBookmarksDao().delete(
+                                                DbLanguage(it))
                                         }
                                         viewModel.bookmarkedLanguages - it
                                     } else {
                                         scope.launch(Dispatchers.IO) {
-                                            DatabaseHolder.Db.languageBookmarksDao().insertAll(it)
+                                            DatabaseHolder.Db.languageBookmarksDao().insertAll(
+                                                DbLanguage(it)
+                                            )
                                         }
                                         viewModel.bookmarkedLanguages + it
                                     }

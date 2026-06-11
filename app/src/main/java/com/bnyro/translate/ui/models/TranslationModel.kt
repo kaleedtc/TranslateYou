@@ -19,35 +19,38 @@ package com.bnyro.translate.ui.models
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.media.MediaPlayer
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.widget.Toast
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.bnyro.translate.App
 import com.bnyro.translate.DatabaseHolder.Companion.Db
 import com.bnyro.translate.R
-import com.bnyro.translate.const.TranslationEngines
+import com.bnyro.translate.db.obj.DbLanguage
 import com.bnyro.translate.db.obj.HistoryItem
 import com.bnyro.translate.db.obj.HistoryItemType
-import com.bnyro.translate.db.obj.Language
-import com.bnyro.translate.obj.Translation
+import com.bnyro.translate.ext.toastFromMainThread
 import com.bnyro.translate.util.JsonHelper
 import com.bnyro.translate.util.Preferences
 import com.bnyro.translate.util.TessHelper
-import com.bnyro.translate.util.TranslationEngine
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.youapps.translation_engines.Language
+import net.youapps.translation_engines.Translation
+import net.youapps.translation_engines.TranslationEngine
 
 class TranslationModel : ViewModel() {
     var engine by mutableStateOf(getCurrentEngine())
@@ -72,7 +75,7 @@ class TranslationModel : ViewModel() {
     var translation by mutableStateOf(Translation(""))
 
     var translatedTexts by mutableStateOf(
-        TranslationEngines.engines
+        App.translationEngines
             .associate { it.name to Translation("") }
     )
 
@@ -88,6 +91,9 @@ class TranslationModel : ViewModel() {
 
     private var mediaPlayer: MediaPlayer? = null
     private var audioFile: File? = null
+
+    var annotatedBitmap: AnnotatedBitmap? by mutableStateOf(null)
+    var annotatedBitmapTranslationsLoading by mutableStateOf(false)
 
     /**
      * A cache of audio data that contains at most [MAX_AUDIO_CACHE_SIZE] elements
@@ -145,8 +151,8 @@ class TranslationModel : ViewModel() {
 
         // engine doesn't support automatic source language detection or the provided language
         if (cancelOnUnsupportedLanguages) {
-            if ((sourceLanguage.isAutoLanguage && engine.autoLanguageCode == null) ||
-                (!sourceLanguage.isAutoLanguage && availableLanguages.none { it.code == sourceLanguage.code })
+            if ((sourceLanguage.code.isEmpty() && engine.autoLanguageCode == null) ||
+                (!sourceLanguage.code.isEmpty() && availableLanguages.none { it.code == sourceLanguage.code })
             ) {
                 viewModelScope.launch {
                     _apiError.emit(UnsupportedLanguageException(sourceLanguage))
@@ -166,7 +172,7 @@ class TranslationModel : ViewModel() {
         translating = true
 
         // reset translations
-        translatedTexts = TranslationEngines.engines
+        translatedTexts = App.translationEngines
             .associate { it.name to Translation("") }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -281,20 +287,20 @@ class TranslationModel : ViewModel() {
         return availableLanguages.firstOrNull { it.code == language.code } ?: language
     }
 
-    private fun getCurrentEngine() = TranslationEngines.engines.find {
+    private fun getCurrentEngine() = App.translationEngines.find {
         it.name == Preferences.get(
             Preferences.selectedEngineKey,
-            TranslationEngines.engines.first().name
+            App.translationEngines.first().name
         )
-    } ?: TranslationEngines.engines.first()
+    } ?: App.translationEngines.first()
 
     fun setCurrentEngine(engine: TranslationEngine) {
         Preferences.put(Preferences.selectedEngineKey, engine.name)
         this.engine = engine
     }
 
-    private fun getEnabledEngines() = TranslationEngines.engines.filter {
-        it.isSimultaneousTranslationEnabled()
+    private fun getEnabledEngines() = App.translationEngines.filter {
+        Preferences.isSimultaneousTranslationEnabled(it)
     }
 
     fun refresh() {
@@ -313,20 +319,41 @@ class TranslationModel : ViewModel() {
     }
 
     private fun fetchBookmarkedLanguages() = viewModelScope.launch(Dispatchers.IO) {
-        bookmarkedLanguages = Db.languageBookmarksDao().getAll()
+        bookmarkedLanguages = Db.languageBookmarksDao().getAll().map(DbLanguage::toLanguage)
     }
 
-    fun processImage(context: Context, image: Bitmap) {
+    fun processImage(context: Context, image: Bitmap) = viewModelScope.launch {
         if (!TessHelper.areLanguagesDownloaded(context)) {
-            Toast.makeText(context, R.string.init_tess_first, Toast.LENGTH_SHORT).show()
-            return
+            context.toastFromMainThread(R.string.init_tess_first)
+            return@launch
         }
-        Thread {
-            TessHelper.getText(context, image)?.let {
-                insertedText = it
-                translateNow()
+
+        withContext(Dispatchers.IO) {
+            // in the beginning, only show the detected texts and not its translation
+            annotatedBitmap = TessHelper.getText(context, image)?.let { (text, components) ->
+                AnnotatedBitmap(
+                    image = image,
+                    components = components,
+                    fullText = text
+                )
             }
-        }.start()
+
+            // asynchronously translate the image components
+            annotatedBitmapTranslationsLoading = true
+            val translatedComponents = annotatedBitmap?.components.orEmpty().map { (rect, text) ->
+                async {
+                    runCatching {
+                        rect to engine.translate(
+                            text,
+                            sourceLanguage.code,
+                            targetLanguage.code
+                        ).translatedText
+                    }.getOrNull()
+                }
+            }.awaitAll().filterNotNull().toMap()
+            annotatedBitmap = annotatedBitmap?.copy(components = translatedComponents)
+             annotatedBitmapTranslationsLoading = false
+        }
     }
 
     fun saveSelectedLanguages() {
@@ -412,3 +439,9 @@ class TranslationModel : ViewModel() {
 
 class UnsupportedLanguageException(val language: Language) :
     Exception("Language $language not supported by currently selected translation engine")
+
+data class AnnotatedBitmap(
+    val image: Bitmap,
+    val components: Map<Rect, String>,
+    val fullText: String,
+)

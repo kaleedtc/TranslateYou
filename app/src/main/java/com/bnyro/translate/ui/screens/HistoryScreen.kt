@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -73,9 +74,6 @@ fun HistoryScreen(
     @StringRes clearItemsHintId: Int
 ) {
     val viewModel: HistoryModel = viewModel()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(
-        rememberTopAppBarState()
-    )
 
     var showDeleteHistoryDialog by remember {
         mutableStateOf(false)
@@ -91,7 +89,7 @@ fun HistoryScreen(
 
     Scaffold(
         modifier = Modifier
-            .nestedScroll(scrollBehavior.nestedScrollConnection),
+            .imePadding(),
         topBar = {
             SearchAppBar(
                 title = stringResource(id = titleId),
@@ -115,8 +113,7 @@ fun HistoryScreen(
                             contentDescription = stringResource(id = clearItemsHintId)
                         )
                     }
-                },
-                scrollBehavior = scrollBehavior
+                }
             )
         },
         content = { pV ->

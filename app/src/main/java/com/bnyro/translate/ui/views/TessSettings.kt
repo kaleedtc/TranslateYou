@@ -17,13 +17,6 @@
 
 package com.bnyro.translate.ui.views
 
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.os.Handler
-import android.os.Looper
 import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -39,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -46,7 +40,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,7 +51,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.bnyro.translate.R
 import com.bnyro.translate.obj.TessLanguage
@@ -77,7 +69,6 @@ fun TessSettings(
 ) {
     val context = LocalContext.current
     val tessModel: TessModel = viewModel()
-    val topAppBarBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
 
     var query by remember {
         mutableStateOf("")
@@ -111,26 +102,12 @@ fun TessSettings(
         }
     }
 
-    val onDownloadComplete = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            // Refresh the downloaded languages every time a download finishes
-            tessModel.refreshDownloadedLanguages(context)
-            if (tessModel.downloadedLanguages.size == 1) {
-                selectedLanguage = tessModel.downloadedLanguages.first()
-                Preferences.put(Preferences.tessLanguageKey, selectedLanguage)
-            }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        ContextCompat.registerReceiver(
-            context,
-            onDownloadComplete,
-            IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-            ContextCompat.RECEIVER_EXPORTED
-        )
-        onDispose {
-            context.unregisterReceiver(onDownloadComplete)
+    fun refreshLanguages() {
+        // Refresh the downloaded languages every time a download finishes
+        tessModel.refreshDownloadedLanguages(context)
+        if (tessModel.downloadedLanguages.size == 1) {
+            selectedLanguage = tessModel.downloadedLanguages.first()
+            Preferences.put(Preferences.tessLanguageKey, selectedLanguage)
         }
     }
 
@@ -141,7 +118,6 @@ fun TessSettings(
                 title = stringResource(R.string.image_translation),
                 value = query,
                 onValueChange = { query = it },
-                scrollBehavior = topAppBarBehavior,
                 navigationIcon = {
                     StyledIconButton(
                         imageVector = Icons.Default.ArrowBack,
@@ -155,7 +131,6 @@ fun TessSettings(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .nestedScroll(topAppBarBehavior.nestedScrollConnection)
             ) {
                 LazyColumn(
                     modifier = Modifier
@@ -176,7 +151,7 @@ fun TessSettings(
                         TessSettingsRow(
                             packName = "$it${TessHelper.DATA_FILE_SUFFIX}",
                             size = null,
-                            selectedLanguage = selectedLanguage,
+                            isSelected = selectedLanguage == it,
                             onSelect = { selectedLanguage = it }
                         ) {
                             StyledIconButton(imageVector = Icons.Default.Delete) {
@@ -207,26 +182,34 @@ fun TessSettings(
                         TessSettingsRow(
                             packName = it.path,
                             size = it.size,
-                            selectedLanguage = selectedLanguage
+                            isSelected = false // only downloaded languages can be selected
                         ) {
-                            var downloading by remember {
-                                mutableStateOf(false)
-                            }
-                            if (!downloading) {
-                                StyledIconButton(imageVector = Icons.Default.Download) {
-                                    TessHelper.downloadLanguageData(context, it.path)
-                                    downloading = true
-                                    Handler(Looper.getMainLooper()).postDelayed({
-                                        downloading = false
-                                    }, 2000)
+                            when (val downloadProgress = tessModel.downloadProgress[it]) {
+                                null -> { // no download in progress
+                                    StyledIconButton(imageVector = Icons.Default.Download) {
+                                        tessModel.downloadLanguage(context, it)
+                                    }
                                 }
-                            } else {
-                                CircularProgressIndicator(
-                                    modifier = Modifier
-                                        .padding(10.dp)
-                                        .requiredSize(27.dp),
-                                    strokeWidth = 3.dp
-                                )
+                                -1f -> { // failure
+                                    StyledIconButton(imageVector = Icons.Default.Error, tint = MaterialTheme.colorScheme.error) {
+                                        tessModel.downloadProgress.remove(it) // reset state
+                                    }
+                                }
+                                1f -> { // success
+                                    LaunchedEffect(Unit) {
+                                        refreshLanguages()
+                                        tessModel.downloadProgress.remove(it)
+                                    }
+                                }
+                                else -> { // download in progress
+                                    CircularProgressIndicator(
+                                        modifier = Modifier
+                                            .padding(10.dp)
+                                            .requiredSize(27.dp),
+                                        strokeWidth = 3.dp,
+                                        progress = { downloadProgress }
+                                    )
+                                }
                             }
                         }
                     }
